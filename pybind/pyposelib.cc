@@ -533,6 +533,32 @@ std::pair<CameraPose, py::dict> estimate_relative_pose_wrapper(const std::vector
     return std::make_pair(pose, output_dict);
 }
 
+std::pair<CameraPose, py::dict> estimate_relative_pose_raw_wrapper(const std::vector<Eigen::Vector3d> &points3D_1,
+                                                               const std::vector<Eigen::Vector3d> &points3D_2,
+                                                               const py::dict &ransac_opt_dict,
+                                                               const py::dict &bundle_opt_dict) {
+
+    RansacOptions ransac_opt;
+    update_ransac_options(ransac_opt_dict, ransac_opt);
+
+    BundleOptions bundle_opt;
+    bundle_opt.loss_scale = 0.5 * ransac_opt.max_epipolar_error;
+    update_bundle_options(bundle_opt_dict, bundle_opt);
+
+    CameraPose pose;
+    std::vector<char> inlier_mask;
+
+    py::gil_scoped_release release;
+    RansacStats stats =
+        estimate_relative_pose_raw(points3D_1, points3D_2, ransac_opt, bundle_opt, &pose, &inlier_mask);
+    py::gil_scoped_acquire acquire;
+
+    py::dict output_dict;
+    write_to_dict(stats, output_dict);
+    output_dict["inliers"] = convert_inlier_vector(inlier_mask);
+    return std::make_pair(pose, output_dict);
+}
+
 std::pair<CameraPose, py::dict> estimate_relative_pose_wrapper(const std::vector<Eigen::Vector2d> &points2D_1,
                                                                const std::vector<Eigen::Vector2d> &points2D_2,
                                                                const py::dict &camera1_dict,
@@ -1109,6 +1135,11 @@ PYBIND11_MODULE(poselib, m) {
           py::overload_cast<const std::vector<Eigen::Vector2d> &, const std::vector<Eigen::Vector2d> &,
                             const py::dict &, const py::dict &, const py::dict &, const py::dict &>(
               &poselib::estimate_relative_pose_wrapper),
+          "Relative pose estimation with non-linear refinement.");
+    m.def("estimate_relative_pose_raw",
+          py::overload_cast<const std::vector<Eigen::Vector3d> &, const std::vector<Eigen::Vector3d> &,
+                            const py::dict &, const py::dict &>(
+              &poselib::estimate_relative_pose_raw_wrapper),
           "Relative pose estimation with non-linear refinement.");
 
     m.def("estimate_shared_focal_relative_pose", &poselib::estimate_shared_focal_relative_pose_wrapper,

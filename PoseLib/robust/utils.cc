@@ -133,6 +133,54 @@ double compute_sampson_msac_score(const CameraPose &pose, const std::vector<Poin
     return score;
 }
 
+// Returns MSAC score of the Sampson error (checks cheirality of points as well)
+double compute_sampson_msac_score(const CameraPose &pose, const std::vector<Point3D> &x1,
+                                  const std::vector<Point3D> &x2, double sq_threshold, size_t *inlier_count) {
+    *inlier_count = 0;
+    Eigen::Matrix3d E;
+    essential_from_motion(pose, &E);
+
+    // For some reason this is a lot faster than just using nice Eigen expressions...
+    const double E0_0 = E(0, 0), E0_1 = E(0, 1), E0_2 = E(0, 2);
+    const double E1_0 = E(1, 0), E1_1 = E(1, 1), E1_2 = E(1, 2);
+    const double E2_0 = E(2, 0), E2_1 = E(2, 1), E2_2 = E(2, 2);
+
+    double score = 0.0;
+    for (size_t k = 0; k < x1.size(); ++k) {
+        Point2D x1h = x1[k].hnormalized();
+        Point2D x2h = x2[k].hnormalized();
+        const double x1_0 = x1h(0), x1_1 = x1h(1);
+        const double x2_0 = x2h(0), x2_1 = x2h(1);
+
+        const double Ex1_0 = E0_0 * x1_0 + E0_1 * x1_1 + E0_2;
+        const double Ex1_1 = E1_0 * x1_0 + E1_1 * x1_1 + E1_2;
+        const double Ex1_2 = E2_0 * x1_0 + E2_1 * x1_1 + E2_2;
+
+        const double Ex2_0 = E0_0 * x2_0 + E1_0 * x2_1 + E2_0;
+        const double Ex2_1 = E0_1 * x2_0 + E1_1 * x2_1 + E2_1;
+        // const double Ex2_2 = E0_2 * x2_0 + E1_2 * x2_1 + E2_2;
+
+        const double C = x2_0 * Ex1_0 + x2_1 * Ex1_1 + Ex1_2;
+        const double Cx = Ex1_0 * Ex1_0 + Ex1_1 * Ex1_1;
+        const double Cy = Ex2_0 * Ex2_0 + Ex2_1 * Ex2_1;
+        const double r2 = C * C / (Cx + Cy);
+
+        if (r2 < sq_threshold) {
+            bool cheirality =
+                check_cheirality(pose, x1[k].normalized(), x2[k].normalized(), 0.01);
+            if (cheirality) {
+                (*inlier_count)++;
+                score += r2;
+            } else {
+                score += sq_threshold;
+            }
+        } else {
+            score += sq_threshold;
+        }
+    }
+    return score;
+}
+
 // Returns MSAC score of the Sampson error (no cheirality check)
 double compute_sampson_msac_score(const Eigen::Matrix3d &E, const std::vector<Point2D> &x1,
                                   const std::vector<Point2D> &x2, double sq_threshold, size_t *inlier_count) {
@@ -309,6 +357,54 @@ int get_inliers(const CameraPose &pose, const std::vector<Point2D> &x1, const st
         if (inlier) {
             bool cheirality =
                 check_cheirality(pose, x1[k].homogeneous().normalized(), x2[k].homogeneous().normalized(), 0.01);
+            if (cheirality) {
+                inlier_count++;
+            } else {
+                inlier = false;
+            }
+        }
+        (*inliers)[k] = inlier;
+    }
+    return inlier_count;
+}
+
+// Compute inliers for relative pose estimation (using Sampson error)
+int get_inliers(const CameraPose &pose, const std::vector<Point3D> &x1, const std::vector<Point3D> &x2,
+                double sq_threshold, std::vector<char> *inliers) {
+
+    inliers->resize(x1.size());
+    Eigen::Matrix3d E;
+    essential_from_motion(pose, &E);
+    const double E0_0 = E(0, 0), E0_1 = E(0, 1), E0_2 = E(0, 2);
+    const double E1_0 = E(1, 0), E1_1 = E(1, 1), E1_2 = E(1, 2);
+    const double E2_0 = E(2, 0), E2_1 = E(2, 1), E2_2 = E(2, 2);
+
+    size_t inlier_count = 0.0;
+    for (size_t k = 0; k < x1.size(); ++k) {
+        Point2D x1h = x1[k].hnormalized();
+        Point2D x2h = x2[k].hnormalized();
+        const double x1_0 = x1h(0), x1_1 = x1h(1);
+        const double x2_0 = x2h(0), x2_1 = x2h(1);
+
+        const double Ex1_0 = E0_0 * x1_0 + E0_1 * x1_1 + E0_2;
+        const double Ex1_1 = E1_0 * x1_0 + E1_1 * x1_1 + E1_2;
+        const double Ex1_2 = E2_0 * x1_0 + E2_1 * x1_1 + E2_2;
+
+        const double Ex2_0 = E0_0 * x2_0 + E1_0 * x2_1 + E2_0;
+        const double Ex2_1 = E0_1 * x2_0 + E1_1 * x2_1 + E2_1;
+        // const double Ex2_2 = E0_2 * x2_0 + E1_2 * x2_1 + E2_2;
+
+        const double C = x2_0 * Ex1_0 + x2_1 * Ex1_1 + Ex1_2;
+
+        const double Cx = Ex1_0 * Ex1_0 + Ex1_1 * Ex1_1;
+        const double Cy = Ex2_0 * Ex2_0 + Ex2_1 * Ex2_1;
+
+        const double r2 = C * C / (Cx + Cy);
+
+        bool inlier = (r2 < sq_threshold);
+        if (inlier) {
+            bool cheirality =
+                check_cheirality(pose, x1[k].normalized(), x2[k].normalized(), 0.01);
             if (cheirality) {
                 inlier_count++;
             } else {
